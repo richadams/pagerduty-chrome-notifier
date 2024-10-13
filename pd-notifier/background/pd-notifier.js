@@ -1,6 +1,8 @@
 // Simple script to poll PagerDuty API for new incidents, and trigger a Chrome notification for
 // any it finds. Will also give user ability to ack/resolve incidents right from the notifs.
 
+importScripts('/lib/pd-api.js');
+
 // Will poll continually at the pollInterval until it's destroyed (_destruct() is called).
 function PagerDutyNotifier()
 {
@@ -123,7 +125,7 @@ function PagerDutyNotifier()
     self.handlerNotificationClicked = function handlerNotificationClicked(notificationId)
     {
         if (notificationId == 'test') { return; } // Ignore for test notifications.
-        window.open('https://' + self.account + '.pagerduty.com/incidents/' + notificationId);
+        chrome.tabs.create({url: 'https://' + self.account + '.pagerduty.com/incidents/' + notificationId});
     }
 
     // This is the poller action, which will trigger an API request and then pass any incidents
@@ -195,7 +197,7 @@ function PagerDutyNotifier()
     {
         if (!self.showBadgeUpdates)
         {
-            chrome.browserAction.setBadgeText({ text: '' });
+            chrome.action.setBadgeText({ text: '' });
             return;
         }
 
@@ -210,21 +212,21 @@ function PagerDutyNotifier()
                   api_url: url,
                   error_returned: data.error
                 });
-                chrome.browserAction.setBadgeText({ text: 'Err.' });
-                chrome.browserAction.setBadgeBackgroundColor({ color: [90, 90, 90, 255] });
+                chrome.action.setBadgeText({ text: 'Err.' });
+                chrome.action.setBadgeBackgroundColor({ color: [90, 90, 90, 255] });
                 return;
             }
 
             // If there are no incidents, or an error in the response, show nothing on badge.
             if (data.total == null || data.total == 0)
             {
-                chrome.browserAction.setBadgeText({ text: '' });
+                chrome.action.setBadgeText({ text: '' });
                 return;
             }
 
             // Otherwise, we have incidents, show the count.
-            chrome.browserAction.setBadgeText({ text: '' + data.total });
-            chrome.browserAction.setBadgeBackgroundColor({ color: [189, 0, 0, 255] });
+            chrome.action.setBadgeText({ text: '' + data.total });
+            chrome.action.setBadgeBackgroundColor({ color: [189, 0, 0, 255] });
         });
     }
 
@@ -252,18 +254,18 @@ function PagerDutyNotifier()
         var buttons = self.removeButtons ? [] : [
             {
                 title: "Acknowledge",
-                iconUrl: chrome.extension.getURL("images/icon-acknowledge.png")
+                iconUrl: chrome.runtime.getURL("images/icon-acknowledge.png")
             },
             {
                 title: "Resolve",
-                iconUrl: chrome.extension.getURL("images/icon-resolve.png")
+                iconUrl: chrome.runtime.getURL("images/icon-resolve.png")
             }
         ];
 
         chrome.notifications.create(incident.id,
         {
             type: "basic",
-            iconUrl: chrome.extension.getURL("images/icon-256.png"),
+            iconUrl: chrome.runtime.getURL("images/icon-256.png"),
             title: incident.summary,
             message: "Service: " + incident.service.summary,
             contextMessage: incident.urgency.charAt(0).toUpperCase() + incident.urgency.slice(1) + " Urgency",
@@ -274,11 +276,27 @@ function PagerDutyNotifier()
         });
 
         // Trigger notification sound if user wants it.
-        if (self.notifSound)
+        if (self.notifSound) { self.playNotification(); }
+    }
+
+    // Play notification sound by sending message to an offscreen document to trigger it.
+    // In the move from MV2 to MV3, audio doesn't work directly from here any more.
+    self.playNotification = function playNotification()
+    {
+        self.createNotificationDocument();
+        chrome.runtime.sendMessage('play-notification');
+    }
+
+    // Create an offscreen document for the audio notification.
+    self.createNotificationDocument = async function createNotificationDocument()
+    {
+        if (await chrome.offscreen.hasDocument()) return;
+        await chrome.offscreen.createDocument(
         {
-            var notifSound = new Audio("audio/notification.mp3");
-            notifSound.play();
-        }
+            url: chrome.runtime.getURL('audio/notification.html'),
+            reasons: ['AUDIO_PLAYBACK'],
+            justification: 'Play notification sound at user request.'
+        });
     }
 
     self._construct();
@@ -287,28 +305,19 @@ function PagerDutyNotifier()
 // Add event handlers for button/notification clicks, and delegate to the currently active notifier object.
 chrome.notifications.onButtonClicked.addListener(function(notificationId, buttonIndex)
 {
-    chrome.runtime.getBackgroundPage(function(bgpg)
-    {
-        bgpg.getNotifier().handlerButtonClicked(notificationId, buttonIndex);
-        chrome.notifications.clear(notificationId);
-    });
+    getNotifier().handlerButtonClicked(notificationId, buttonIndex);
+    chrome.notifications.clear(notificationId);
 });
 chrome.notifications.onClicked.addListener(function(notificationId)
 {
-    chrome.runtime.getBackgroundPage(function(bgpg)
-    {
-        bgpg.getNotifier().handlerNotificationClicked(notificationId);
-        chrome.notifications.clear(notificationId);
-    });
+    getNotifier().handlerNotificationClicked(notificationId);
+    chrome.notifications.clear(notificationId);
 });
 
 // Add event handler for the toolbar icon click.
-chrome.browserAction.onClicked.addListener(function(tab)
+chrome.action.onClicked.addListener(function(tab)
 {
-    chrome.runtime.getBackgroundPage(function(bgpg)
-    {
-        bgpg.getNotifier().openDashboard();
-    });
+    getNotifier().openDashboard();
 });
 
 // If this is the first installation, show the options page so user can set up their settings.
@@ -318,6 +327,12 @@ chrome.runtime.onInstalled.addListener(function(details)
     {
         chrome.tabs.create({ 'url': 'chrome://extensions/?options=' + chrome.runtime.id });
     }
+});
+
+// Listen for reload messages and reload the notifier if receieved.
+chrome.runtime.onMessage.addListener(function(message)
+{
+    if (message == 'reload-pd-notifier') { reloadNotifier(); }
 });
 
 // The currently active notifier object, and accessor.
@@ -332,11 +347,13 @@ function reloadNotifier()
 }
 
 // Add option to clear all notifications to icon context-menu.
-chrome.contextMenus.create({
-    title: "Clear all notifications",
-    id: "pd_clear_all",
-    contexts: ["browser_action"],
-    visible: true
+chrome.runtime.onInstalled.addListener(function() {
+    chrome.contextMenus.create({
+        title: "Clear all notifications",
+        id: "pd_clear_all",
+        contexts: ["action"],
+        visible: true
+    });
 });
 
 chrome.contextMenus.onClicked.addListener(function(info, tab)
@@ -351,11 +368,13 @@ chrome.contextMenus.onClicked.addListener(function(info, tab)
 });
 
 // Add option to trigger a test notification popup.
-chrome.contextMenus.create({
-    title: "Show test notification",
-    id: "pd_test_notification",
-    contexts: ["browser_action"],
-    visible: true
+chrome.runtime.onInstalled.addListener(function() {
+    chrome.contextMenus.create({
+        title: "Show test notification",
+        id: "pd_test_notification",
+        contexts: ["action"],
+        visible: true
+    });
 });
 
 chrome.contextMenus.onClicked.addListener(function(info, tab)
@@ -376,10 +395,7 @@ chrome.contextMenus.onClicked.addListener(function(info, tab)
 // Listen for Chrome Alarms and retrigger the notifier when one is caught.
 chrome.alarms.onAlarm.addListener(function(alarm)
 {
-    chrome.runtime.getBackgroundPage(function(bgpg)
-    {
-        bgpg.reloadNotifier();
-    });
+    reloadNotifier();
 });
 
 // Sets up a Chrome Alarm to retrigger the notifier every so often, to make sure it's always running.

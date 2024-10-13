@@ -89,17 +89,14 @@ document.getElementById('save').addEventListener('click', function ()
     function()
     {
         // Tell the notifier to reload itself with the latest configuration.
-        chrome.runtime.getBackgroundPage(function(bgpg)
-        {
-          bgpg.reloadNotifier();
-        });
+        chrome.runtime.sendMessage('reload-pd-notifier');
 
         // Let the user know things saved properly.
         getElement('saved').className = 'saved';
         setTimeout(function() { getElement('saved').className = ''; }, 3000);
 
         // Remove badge icon if it was previously set.
-        if (!getElement('show-badge').checked) { chrome.browserAction.setBadgeText({ text: '' }); }
+        if (!getElement('show-badge').checked) { chrome.action.setBadgeText({ text: '' }); }
     });
 });
 
